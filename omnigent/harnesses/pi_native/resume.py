@@ -266,7 +266,101 @@ def pi_session_records_from_session_items(
             entry["parentId"] = parent_id
             records.append(entry)
             parent_id = cast(str, entry["id"])
-    return records
+    return _normalize_pi_tool_history(records)
+
+
+def _normalize_pi_tool_history(records: list[_JsonObject]) -> list[_JsonObject]:
+    """Make reconstructed tool exchanges valid for strict chat APIs.
+
+    Omnigent persists assistant text, function calls, and function results as
+    separate flat items. Combine consecutive assistant records so every
+    retained tool result directly follows the assistant group that declared
+    its call id. Orphan results and calls without results are omitted.
+    """
+    if len(records) <= 1:
+        return records
+
+    normalized: list[_JsonObject] = [records[0]]
+    pending_assistant: list[_JsonObject] = []
+    active_tool_call_ids: set[str] = set()
+    active_assistant: _JsonObject | None = None
+
+    def flush_assistant() -> None:
+        nonlocal active_assistant, active_tool_call_ids
+        if not pending_assistant:
+            return
+        merged = dict(pending_assistant[0])
+        first_message = pending_assistant[0].get("message")
+        message = dict(first_message) if isinstance(first_message, dict) else {}
+        content: list[_JsonObject] = []
+        for record in pending_assistant:
+            candidate = record.get("message")
+            blocks = candidate.get("content") if isinstance(candidate, dict) else None
+            if isinstance(blocks, list):
+                content.extend(block for block in blocks if isinstance(block, dict))
+        message["content"] = content
+        merged["message"] = message
+        normalized.append(merged)
+        active_assistant = merged
+        active_tool_call_ids = {
+            cast(str, block["id"])
+            for block in content
+            if block.get("type") == "toolCall"
+            and isinstance(block.get("id"), str)
+            and block.get("id")
+        }
+        pending_assistant.clear()
+
+    def finalize_tool_group() -> None:
+        nonlocal active_assistant
+        if active_assistant is None or not active_tool_call_ids:
+            active_assistant = None
+            return
+        message = active_assistant.get("message")
+        if isinstance(message, dict):
+            blocks = message.get("content")
+            if isinstance(blocks, list):
+                retained = [
+                    block
+                    for block in blocks
+                    if not (
+                        isinstance(block, dict)
+                        and block.get("type") == "toolCall"
+                        and block.get("id") in active_tool_call_ids
+                    )
+                ]
+                message["content"] = retained
+                if not retained:
+                    normalized.remove(active_assistant)
+        active_tool_call_ids.clear()
+        active_assistant = None
+
+    for record in records[1:]:
+        message = record.get("message")
+        role = message.get("role") if isinstance(message, dict) else None
+        if role == "assistant":
+            finalize_tool_group()
+            pending_assistant.append(record)
+            continue
+        if role == "toolResult":
+            flush_assistant()
+            call_id = message.get("toolCallId") if isinstance(message, dict) else None
+            if isinstance(call_id, str) and call_id in active_tool_call_ids:
+                normalized.append(record)
+                active_tool_call_ids.discard(call_id)
+            continue
+        flush_assistant()
+        finalize_tool_group()
+        normalized.append(record)
+    flush_assistant()
+    finalize_tool_group()
+
+    parent_id: str | None = None
+    for record in normalized[1:]:
+        record["parentId"] = parent_id
+        record_id = record.get("id")
+        parent_id = record_id if isinstance(record_id, str) else parent_id
+    return normalized
 
 
 def _pi_entries_from_session_item(
