@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 
 from omnigent.inner.pi_settings import prepare_managed_pi_agent_dir
@@ -42,6 +43,36 @@ def test_prepare_managed_pi_agent_dir_copies_settings_and_symlinks_npm(
     assert written["retry"] == {"maxRetries": 5}
     assert (managed / "npm").is_symlink()
     assert (managed / "npm").resolve() == (global_agent / "npm").resolve()
+
+
+def test_prepare_managed_pi_agent_dir_copies_global_auth(tmp_path: Path) -> None:
+    """The managed dir receives the user's global auth.json (CLI logins)."""
+    global_agent = tmp_path / "global-pi"
+    global_agent.mkdir()
+    (global_agent / "auth.json").write_text(
+        json.dumps({"anthropic": {"token": "sk-ant-x"}, "openai-codex": {"token": "sk-oai"}})
+    )
+    managed = tmp_path / "managed"
+    prepare_managed_pi_agent_dir(managed, global_agent_dir=global_agent)
+
+    written = json.loads((managed / "auth.json").read_text(encoding="utf-8"))
+    assert written == {"anthropic": {"token": "sk-ant-x"}, "openai-codex": {"token": "sk-oai"}}
+    assert stat.S_IMODE((managed / "auth.json").stat().st_mode) == 0o600
+
+
+def test_prepare_managed_pi_agent_dir_no_global_auth_leaves_managed(
+    tmp_path: Path,
+) -> None:
+    """No global auth.json → the managed dir's auth file (if any) is untouched."""
+    global_agent = tmp_path / "global-pi"
+    global_agent.mkdir()
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "auth.json").write_text("[]")
+
+    prepare_managed_pi_agent_dir(managed, global_agent_dir=global_agent)
+
+    assert (managed / "auth.json").read_text(encoding="utf-8") == "[]"
 
 
 def test_prepare_managed_pi_agent_dir_empty_global_writes_overlay_only(

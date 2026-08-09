@@ -25,11 +25,11 @@ import os
 import re
 import shlex
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple, NotRequired, TypeAlias, TypedDict, TypeGuard
+from typing import TYPE_CHECKING, NamedTuple, NotRequired, TypeAlias, TypedDict, TypeGuard, cast
 from urllib.parse import urlparse
 
 from omnigent.databricks_ai_gateway import (
@@ -133,12 +133,16 @@ _is_databricks_ai_gateway_url = is_databricks_ai_gateway_url
 _PiModelEntry: TypeAlias = PiModelEntry
 
 
-def _split_pi_native_model_selection(selection: str | None) -> tuple[str, str] | None:
-    """Split an Omnigent-managed ``provider/model`` picker value."""
+def _split_pi_native_model_selection(
+    selection: str | None,
+    *,
+    provider_ids: Collection[str] = _PI_MANAGED_PROVIDER_IDS,
+) -> tuple[str, str] | None:
+    """Split a ``provider/model`` picker value for a known managed provider."""
     if not selection:
         return None
     provider_id, separator, model_id = selection.partition("/")
-    if separator and provider_id in _PI_MANAGED_PROVIDER_IDS and model_id:
+    if separator and provider_id in provider_ids and model_id:
         return provider_id, model_id
     return None
 
@@ -1165,8 +1169,10 @@ def _inline_family_pi_provider(
             configured_context_window=family.context_window,
             configured_max_output_tokens=family.max_output_tokens,
         )
+        # Register under the provider's own config name so picker labels and
+        # harness.pi-native.args pins use the name the user configured.
         return PiProviderConfig(
-            provider_id=_PI_PROVIDER_ID,
+            provider_id=entry.name,
             base_url=family.base_url,
             api=api,
             model=resolved_model,
@@ -1197,9 +1203,6 @@ def resolve_pi_native_provider(
     :returns: The resolved provider config, or ``None`` to fall back to Pi's
         own credentials.
     """
-    selection = _split_pi_native_model_selection(model)
-    if selection is not None:
-        _, model = selection
     try:
         config = config_loader()
         # Pi is multi-family; ``omnigent setup`` marks defaults per family, not
@@ -1217,6 +1220,12 @@ def resolve_pi_native_provider(
                 "surface; Pi will use its own login."
             )
             return None
+        selection = _split_pi_native_model_selection(
+            model,
+            provider_ids={*_PI_MANAGED_PROVIDER_IDS, entry.name},
+        )
+        if selection is not None:
+            _, model = selection
         if entry.kind == DATABRICKS_KIND:
             resolved = _databricks_pi_provider(entry, model=model)
         elif entry.kind == CLI_CONFIG_KIND:
@@ -1279,6 +1288,53 @@ def resolve_pi_native_provider(
         return None
 
 
+def _merge_global_models_providers(
+    rendered: _PiModelsConfig,
+    *,
+    global_agent_dir: Path | None = None,
+) -> _PiModelsConfig:
+    """Merge the user's global Pi ``models.json`` providers into *rendered*.
+
+    The managed per-session Pi config dir (``PI_CODING_AGENT_DIR``) shadows the
+    user's global ``~/.pi/agent``, so a session previously registered ONLY the
+    resolved Omnigent provider — every provider the user configured for Pi
+    themselves (``ollama-cloud``, ``nanogpt``, a local proxy, …) vanished from
+    the session's model picker. Merge the global providers under the rendered
+    ones (the resolved provider wins on id collisions) so the picker shows the
+    full catalog Pi would offer outside Omnigent.
+
+    Global providers are Pi-native already (``apiKey`` ``$VAR`` / ``!command``
+    forms resolve at request time), so merging needs no translation. A missing
+    or unreadable global file leaves *rendered* unchanged.
+    """
+    from omnigent.inner.pi_settings import DEFAULT_PI_AGENT_DIR
+
+    agent_root = global_agent_dir if global_agent_dir is not None else DEFAULT_PI_AGENT_DIR
+    global_path = agent_root / "models.json"
+    if not global_path.is_file():
+        return rendered
+    try:
+        raw = json.loads(global_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        _LOGGER.warning(
+            "pi-native: ignoring unreadable global Pi models.json at %s: %s",
+            global_path,
+            exc,
+        )
+        return rendered
+    providers = raw.get("providers") if isinstance(raw, dict) else None
+    if not isinstance(providers, dict) or not providers:
+        return rendered
+    merged: dict[str, _PiProviderPayload] = dict(rendered["providers"])
+    for provider_id, payload in providers.items():
+        if not isinstance(provider_id, str) or not isinstance(payload, dict):
+            continue
+        if provider_id in merged:
+            continue  # the resolved Omnigent provider wins on collision
+        merged[provider_id] = cast(_PiProviderPayload, payload)
+    return {"providers": merged}
+
+
 def write_pi_models_config(
     agent_dir: Path,
     provider: PiProviderConfig,
@@ -1325,6 +1381,7 @@ def pi_native_provider_launch(
     reasoning_effort: str | None = None,
     *,
     selection: str | None = None,
+    global_agent_dir: Path | None = None,
 ) -> PiNativeLaunch:
     """Write the managed config and return the launch env + CLI args for Pi.
 
@@ -1335,20 +1392,31 @@ def pi_native_provider_launch(
         (with a warning) on a gateway-routed model, whose thinking must stay
         off for text to surface.
     :param selection: Optional picker value used to select a generated provider.
+    :param global_agent_dir: The user's global Pi agent dir to merge providers
+        and login state from; defaults to ``~/.pi/agent``. The managed
+        ``models.json`` keeps every provider the user configured for Pi
+        themselves (merged under the resolved one) instead of clobbering them.
     :returns: The launch env, CLI args and any effort warning.
     """
     # Render once and reuse: rendering logs how an uncataloged model was routed,
     # and this function both writes the config and reads it back for --provider.
-    rendered = provider.to_models_config()
-    # Resolve which provider the selected model lives in. Non-Claude models
-    # (GLM, GPT, Llama…) are in secondary providers; Claude models are in the
-    # primary provider. Read the rendered config so family fallbacks agree.
+    managed_rendered = provider.to_models_config()
+    rendered = _merge_global_models_providers(
+        managed_rendered,
+        global_agent_dir=global_agent_dir,
+    )
+    # Resolve which managed provider the selected model lives in. Global Pi
+    # providers are copied into the runtime catalog but do not change the
+    # Omnigent-configured launch route.
     selected_model = provider.model
     model_provider_id = provider.provider_id
-    selection_parts = _split_pi_native_model_selection(selection)
+    selection_parts = _split_pi_native_model_selection(
+        selection,
+        provider_ids={*_PI_MANAGED_PROVIDER_IDS, *managed_rendered["providers"]},
+    )
     if selection_parts is not None:
         candidate_provider, candidate_model = selection_parts
-        configured = rendered["providers"].get(candidate_provider)
+        configured = managed_rendered["providers"].get(candidate_provider)
         if not configured or not any(
             model.get("id") == candidate_model for model in configured.get("models", [])
         ):
@@ -1358,7 +1426,7 @@ def pi_native_provider_launch(
         model_provider_id = candidate_provider
         selected_model = candidate_model
     else:
-        for extra_id, extra_cfg in rendered["providers"].items():
+        for extra_id, extra_cfg in managed_rendered["providers"].items():
             if extra_id == provider.provider_id:
                 continue
             if any(m.get("id") == provider.model for m in extra_cfg.get("models", [])):
@@ -1375,7 +1443,11 @@ def pi_native_provider_launch(
     # key; Pi's getDefaultThinkingLevel() returns null (falsy) → no thinking.
     from omnigent.inner.pi_settings import prepare_managed_pi_agent_dir
 
-    prepare_managed_pi_agent_dir(agent_dir, overlay={"defaultThinkingLevel": None})
+    prepare_managed_pi_agent_dir(
+        agent_dir,
+        overlay={"defaultThinkingLevel": None},
+        global_agent_dir=global_agent_dir,
+    )
     env = {PI_CODING_AGENT_DIR_ENV_VAR: str(agent_dir)}
     # When the model id contains a "/" Pi's arg parser splits on the first
     # slash and treats the left part as a provider name, overriding

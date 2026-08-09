@@ -3,15 +3,17 @@
 When the pi harness runs in gateway mode it relocates Pi's agent root to a
 per-session temp directory (for ``models.json``). That hides the user's global
 ``~/.pi/agent/settings.json`` and installed package trees. This module copies
-the global settings metadata into the managed dir and symlinks install
-directories so Pi's native loader still sees extensions and ``pi install``
-packages — without mutating the user's home directory.
+the global settings metadata and login state (``auth.json``) into the managed
+dir and symlinks install directories so Pi's native loader still sees
+extensions and ``pi install`` packages — without mutating the user's home
+directory.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TypeAlias, cast
@@ -75,6 +77,32 @@ def _symlink_agent_resource_dirs(
             )
 
 
+def _copy_global_auth_file(managed_dir: Path, global_agent_dir: Path) -> None:
+    """Copy the user's global ``auth.json`` (CLI logins) into the managed dir.
+
+    The managed dir shadows ``~/.pi/agent``, so without this the session's Pi
+    starts with no login state: the model picker only sees ``models.json``
+    providers, and models authenticated via Pi ``/login`` (Claude, GPT,
+    DeepSeek, …) never appear as switchable. Copy (not symlink) so Pi's own
+    in-session token refreshes never mutate the user's global file.
+    """
+    source = global_agent_dir / "auth.json"
+    if not source.is_file():
+        return
+    try:
+        data = source.read_bytes()
+    except OSError as exc:
+        _logger.warning("Could not read global Pi auth at %s: %s", source, exc)
+        return
+    target = managed_dir / "auth.json"
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+    except OSError as exc:
+        _logger.warning("Could not copy Pi auth into managed dir at %s: %s", target, exc)
+
+
 def prepare_managed_pi_agent_dir(
     managed_dir: Path,
     *,
@@ -85,9 +113,11 @@ def prepare_managed_pi_agent_dir(
     Seed a managed ``PI_CODING_AGENT_DIR`` with the user's global Pi settings.
 
     Copies (merges) ``settings.json`` from the user's global agent dir into
-    *managed_dir*, applies *overlay* (e.g. Omnigent retry policy), and
-    symlinks install trees (``npm/``, ``git/``) so ``packages`` entries keep
-    working. The user's ``~/.pi/agent`` is never modified.
+    *managed_dir*, applies *overlay* (e.g. Omnigent retry policy), copies the
+    global ``auth.json`` (CLI logins) so the session's Pi can serve models
+    authenticated via ``/login``, and symlinks install trees (``npm/``,
+    ``git/``) so ``packages`` entries keep working. The user's
+    ``~/.pi/agent`` is never modified.
 
     Project-scoped ``.pi/settings.json`` at the session cwd is still read by
     Pi at runtime and overrides these global settings per Pi's normal rules.
@@ -112,5 +142,7 @@ def prepare_managed_pi_agent_dir(
     except OSError as exc:
         _logger.warning("Could not write managed Pi settings at %s: %s", settings_path, exc)
         return
+
+    _copy_global_auth_file(managed_dir, agent_root)
 
     _symlink_agent_resource_dirs(managed_dir, agent_root)

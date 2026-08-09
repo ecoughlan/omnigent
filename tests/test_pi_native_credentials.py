@@ -147,6 +147,7 @@ def test_key_provider_resolves_to_inline_family() -> None:
         model="claude-sonnet-4-6", config_loader=lambda: config
     )
     assert provider is not None
+    assert provider.provider_id == "anthropic"
     assert provider.api == "anthropic-messages"
     assert provider.base_url == "https://api.anthropic.com"
     assert provider.api_key == "sk-test-literal"
@@ -170,11 +171,37 @@ def test_managed_picker_prefix_is_not_part_of_provider_model() -> None:
     }
 
     provider = creds.resolve_pi_native_provider(
-        model="omnigent/claude-opus-4-7", config_loader=lambda: config
+        model="anthropic/claude-opus-4-7", config_loader=lambda: config
     )
 
     assert provider is not None
+    assert provider.provider_id == "anthropic"
     assert provider.model == "claude-opus-4-7"
+
+
+def test_managed_picker_preserves_slash_shaped_model_id() -> None:
+    """Only the configured provider prefix is stripped from a picker value."""
+    config = {
+        "providers": {
+            "deepinfra": {
+                "kind": "gateway",
+                "default": True,
+                "openai": {
+                    "base_url": "https://api.deepinfra.com/v1/openai",
+                    "api_key": "sk-test",
+                    "wire_api": "chat",
+                },
+            }
+        }
+    }
+
+    provider = creds.resolve_pi_native_provider(
+        model="deepinfra/zai-org/GLM-4.7", config_loader=lambda: config
+    )
+
+    assert provider is not None
+    assert provider.provider_id == "deepinfra"
+    assert provider.model == "zai-org/GLM-4.7"
 
 
 def test_subscription_default_returns_none() -> None:
@@ -273,6 +300,140 @@ def test_write_models_config_is_owner_only(tmp_path: Path) -> None:
     assert stat.S_IMODE(agent_dir.stat().st_mode) == 0o700
     written = json.loads(path.read_text(encoding="utf-8"))
     assert written["providers"]["omnigent"]["apiKey"] == "sk-secret"
+
+
+def test_provider_launch_merges_global_models_providers(tmp_path: Path) -> None:
+    """The managed models.json keeps the user's global Pi providers.
+
+    The per-session managed config dir shadows ``~/.pi/agent``; merging the
+    global ``models.json`` providers (ollama-cloud, nanogpt, …) back in means
+    the session's model picker shows the user's full catalog, not just the
+    resolved Omnigent provider. The resolved provider wins on id collisions.
+    """
+    provider = creds.PiProviderConfig(
+        provider_id="synthetic",
+        base_url="https://api.synthetic.new/openai/v1",
+        api="openai-completions",
+        model="hf:moonshotai/Kimi-K3",
+        api_key='!cat "$HOME/synthai.key"',
+        auth_header=True,
+    )
+    global_agent = tmp_path / "global-pi"
+    global_agent.mkdir()
+    (global_agent / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "ollama-cloud": {
+                        "baseUrl": "https://ollama.com/v1",
+                        "api": "openai-completions",
+                        "apiKey": "$OLLAMA_API_KEY",
+                        "authHeader": True,
+                        "models": [{"id": "deepseek-v4-flash"}, {"id": "glm-4.6"}],
+                    },
+                    # Collides with the resolved provider id: must NOT clobber.
+                    "synthetic": {
+                        "baseUrl": "https://evil.example/v1",
+                        "api": "openai-completions",
+                        "apiKey": "sk-stale",
+                        "models": [{"id": "other"}],
+                    },
+                }
+            }
+        )
+    )
+    agent_dir = tmp_path / "pi-agent"
+    creds.pi_native_provider_launch(agent_dir, provider, global_agent_dir=global_agent)
+
+    written = json.loads((agent_dir / "models.json").read_text(encoding="utf-8"))
+    providers = written["providers"]
+    # The global provider is preserved verbatim (Pi-native $VAR apiKey).
+    assert providers["ollama-cloud"]["apiKey"] == "$OLLAMA_API_KEY"
+    assert providers["ollama-cloud"]["models"] == [
+        {"id": "deepseek-v4-flash"},
+        {"id": "glm-4.6"},
+    ]
+    # The resolved provider wins the id collision.
+    assert providers["synthetic"]["baseUrl"] == "https://api.synthetic.new/openai/v1"
+    assert providers["synthetic"]["models"] == [{"id": "hf:moonshotai/Kimi-K3"}]
+
+
+def test_global_duplicate_model_does_not_hijack_launch_provider(tmp_path: Path) -> None:
+    """Global providers extend the catalog without changing the managed route."""
+    provider = creds.PiProviderConfig(
+        provider_id="synthetic",
+        base_url="https://api.synthetic.new/openai/v1",
+        api="openai-completions",
+        model="hf:moonshotai/Kimi-K3",
+        api_key="sk-secret",
+        auth_header=False,
+    )
+    global_agent = tmp_path / "global-pi"
+    global_agent.mkdir()
+    (global_agent / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "shadow": {
+                        "baseUrl": "https://shadow.example/v1",
+                        "api": "openai-completions",
+                        "apiKey": "sk-shadow",
+                        "models": [{"id": "hf:moonshotai/Kimi-K3"}],
+                    }
+                }
+            }
+        )
+    )
+
+    _env, args, _warning = creds.pi_native_provider_launch(
+        tmp_path / "pi-agent",
+        provider,
+        global_agent_dir=global_agent,
+    )
+
+    assert args[:4] == [
+        "--provider",
+        "synthetic",
+        "--model",
+        "synthetic/hf:moonshotai/Kimi-K3",
+    ]
+
+
+def test_provider_launch_without_global_models_unchanged(tmp_path: Path) -> None:
+    """A missing global models.json leaves the rendered config untouched."""
+    provider = creds.PiProviderConfig(
+        provider_id="synthetic",
+        base_url="https://api.synthetic.new/openai/v1",
+        api="openai-completions",
+        model="hf:moonshotai/Kimi-K3",
+        api_key="sk-secret",
+        auth_header=False,
+    )
+    agent_dir = tmp_path / "pi-agent"
+    creds.pi_native_provider_launch(agent_dir, provider, global_agent_dir=tmp_path / "absent")
+
+    written = json.loads((agent_dir / "models.json").read_text(encoding="utf-8"))
+    assert list(written["providers"]) == ["synthetic"]
+
+
+def test_provider_launch_ignores_unreadable_global_models(tmp_path: Path) -> None:
+    """A malformed global models.json is skipped, not fatal to launch."""
+    provider = creds.PiProviderConfig(
+        provider_id="synthetic",
+        base_url="https://api.synthetic.new/openai/v1",
+        api="openai-completions",
+        model="hf:moonshotai/Kimi-K3",
+        api_key="sk-secret",
+        auth_header=False,
+    )
+    global_agent = tmp_path / "global-pi"
+    global_agent.mkdir()
+    (global_agent / "models.json").write_text("{not json")
+    agent_dir = tmp_path / "pi-agent"
+    creds.pi_native_provider_launch(agent_dir, provider, global_agent_dir=global_agent)
+
+    written = json.loads((agent_dir / "models.json").read_text(encoding="utf-8"))
+    assert list(written["providers"]) == ["synthetic"]
 
 
 def test_provider_launch_returns_env_and_args(tmp_path: Path) -> None:
@@ -442,9 +603,9 @@ def test_provider_launch_rejects_unavailable_qualified_selection(tmp_path: Path)
 def test_pi_native_model_options_lists_only_managed_models(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pre-launch choices come only from the provider built by ``omni setup``."""
+    """Pre-launch choices use configured labels and omit global Pi providers."""
     provider = creds.PiProviderConfig(
-        provider_id="omnigent",
+        provider_id="anthropic",
         base_url="https://api.anthropic.com",
         api="anthropic-messages",
         model="claude-sonnet-4-6",
@@ -463,14 +624,14 @@ def test_pi_native_model_options_lists_only_managed_models(
 
     assert creds.pi_native_model_options() == [
         {
+            "id": "anthropic/claude-sonnet-4-6",
+            "model": "anthropic/claude-sonnet-4-6",
+            "displayName": "claude-sonnet-4-6",
+        },
+        {
             "id": "omnigent-openai/gpt-5.6-sol",
             "model": "omnigent-openai/gpt-5.6-sol",
             "displayName": "GPT 5.6 Sol",
-        },
-        {
-            "id": "omnigent/claude-sonnet-4-6",
-            "model": "omnigent/claude-sonnet-4-6",
-            "displayName": "claude-sonnet-4-6",
         },
     ]
 
@@ -1044,10 +1205,11 @@ def test_model_override_beats_inline_family_default() -> None:
     )
     assert provider is not None
     assert provider.model == "claude-opus-4-7"
+    assert provider.provider_id == "anthropic"
     cfg = provider.to_models_config()
-    entry = cfg["providers"]["omnigent"]["models"][0]
+    entry = cfg["providers"]["anthropic"]["models"][0]
     assert entry["id"] == "claude-opus-4-7"
-    # The entry now carries full metadata (input, reasoning) rather than a bare id.
+    # The entry carries full metadata rather than a bare id.
     assert entry.get("reasoning") is True
 
 
@@ -1081,7 +1243,7 @@ def test_databricks_prefixed_override_normalized_for_inline_anthropic() -> None:
     # The gateway prefix is stripped for the vendor-direct Anthropic endpoint.
     assert provider.model == "claude-opus-4-7"
     cfg = provider.to_models_config()
-    entry = cfg["providers"]["omnigent"]["models"][0]
+    entry = cfg["providers"]["anthropic"]["models"][0]
     assert entry["id"] == "claude-opus-4-7"
     assert entry.get("reasoning") is True
 
@@ -1114,9 +1276,10 @@ def test_databricks_prefixed_override_normalized_for_inline_openai() -> None:
     # The gateway prefix is stripped for the vendor-direct OpenAI endpoint.
     assert provider.model == "gpt-5-4"
     cfg = provider.to_models_config()
-    entry = cfg["providers"]["omnigent"]["models"][0]
+    entry = cfg["providers"]["openai-gateway"]["models"][0]
     assert entry["id"] == "gpt-5-4"
-    # The entry now carries input metadata rather than a bare id-only dict.
+    # The entry carries input metadata rather than a bare id-only dict.
+    assert entry.get("input") == ["text", "image"]
 
 
 def test_inline_family_passes_non_mechanical_override_through() -> None:
@@ -1147,9 +1310,10 @@ def test_inline_family_passes_non_mechanical_override_through() -> None:
     assert provider is not None
     assert provider.model == "zai-org/GLM-4.7"
     cfg = provider.to_models_config()
-    entry = cfg["providers"]["omnigent"]["models"][0]
+    entry = cfg["providers"]["deepinfra"]["models"][0]
     assert entry["id"] == "zai-org/GLM-4.7"
-    # The entry now carries input metadata rather than a bare id-only dict.
+    # The entry carries input metadata rather than a bare id-only dict.
+    assert entry.get("input") == ["text", "image"]
 
 
 def test_inline_family_configured_gateway_default_survives_verbatim() -> None:
@@ -1178,7 +1342,9 @@ def test_inline_family_configured_gateway_default_survives_verbatim() -> None:
     assert provider.api == "anthropic-messages"
     assert provider.model == "databricks-claude-opus-4-8"
     cfg = provider.to_models_config()
-    assert cfg["providers"]["omnigent"]["models"][0]["id"] == "databricks-claude-opus-4-8"
+    assert cfg["providers"]["translating-proxy"]["models"][0]["id"] == (
+        "databricks-claude-opus-4-8"
+    )
 
 
 def test_databricks_profile_registers_gpt_provider(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1885,7 +2051,7 @@ def test_anthropic_protocol_proxy_serves_non_claude_model() -> None:
     assert provider.databricks_surfaces == {}
 
     cfg = provider.to_models_config()
-    assert [m["id"] for m in cfg["providers"]["omnigent"]["models"]] == ["zai-org/GLM-4.7"]
+    assert [m["id"] for m in cfg["providers"]["proxy"]["models"]] == ["zai-org/GLM-4.7"]
     assert provider.unroutable_model_warning() is None
 
 
@@ -2049,7 +2215,7 @@ def test_gateway_provider_config_context_window_flows_to_models_json() -> None:
     provider = creds.resolve_pi_native_provider(config_loader=lambda: config)
     assert provider is not None
     cfg = provider.to_models_config()
-    entry = cfg["providers"]["omnigent"]["models"][0]
+    entry = cfg["providers"]["litellm"]["models"][0]
     assert entry["id"] == "glm-5.2"
     assert entry["contextWindow"] == 1_048_576
     assert entry["maxTokens"] == 131_072
@@ -2078,7 +2244,7 @@ def test_gateway_provider_without_limits_still_carries_input_and_reasoning() -> 
     provider = creds.resolve_pi_native_provider(config_loader=lambda: config)
     assert provider is not None
     cfg = provider.to_models_config()
-    entry = cfg["providers"]["omnigent"]["models"][0]
+    entry = cfg["providers"]["local"]["models"][0]
     assert entry["id"] == "deepseek-r1"
     # Even without limits, reasoning and input are populated.
     assert entry.get("reasoning") is True
