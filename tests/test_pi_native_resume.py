@@ -167,9 +167,12 @@ def test_assistant_message_has_required_metadata() -> None:
     assert msg["usage"]["cost"]["total"] == 0
 
 
-def test_function_call_becomes_assistant_toolcall() -> None:
+def test_paired_function_call_becomes_assistant_toolcall() -> None:
     records = pi_session_records_from_session_items(
-        [_function_call_item(name="bash", call_id="call_1", arguments='{"cmd": "ls"}')],
+        [
+            _function_call_item(name="bash", call_id="call_1", arguments='{"cmd": "ls"}'),
+            _function_output_item(call_id="call_1", output="listing"),
+        ],
         session_id="conv_abc",
         external_session_id=_EXTERNAL_ID,
         cwd=Path("/repo"),
@@ -183,18 +186,14 @@ def test_function_call_becomes_assistant_toolcall() -> None:
     assert block["arguments"] == {"cmd": "ls"}
 
 
-def test_function_output_becomes_toolresult() -> None:
+def test_orphan_function_output_is_dropped() -> None:
     records = pi_session_records_from_session_items(
         [_function_output_item(call_id="call_1", output="file listing")],
         session_id="conv_abc",
         external_session_id=_EXTERNAL_ID,
         cwd=Path("/repo"),
     )
-    msg = records[1]["message"]
-    assert msg["role"] == "toolResult"
-    assert msg["toolCallId"] == "call_1"
-    assert msg["content"] == [{"type": "text", "text": "file listing"}]
-    assert msg["isError"] is False
+    assert len(records) == 1
 
 
 def test_full_tool_roundtrip_chains_correctly() -> None:
@@ -221,6 +220,77 @@ def test_full_tool_roundtrip_chains_correctly() -> None:
     assert entries[0]["parentId"] is None
     for prev, cur in itertools.pairwise(entries):
         assert cur["parentId"] == prev["id"]
+
+
+def test_parallel_tool_calls_and_text_form_one_strict_assistant_group() -> None:
+    items = [
+        _user_item("inspect both", item_id="u1"),
+        _function_call_item(name="read", call_id="c1", arguments='{"path":"a"}', item_id="fc1"),
+        _function_call_item(name="read", call_id="c2", arguments='{"path":"b"}', item_id="fc2"),
+        _assistant_item("I will inspect both.", item_id="a1"),
+        _function_output_item(call_id="c1", output="A", item_id="fo1"),
+        _function_output_item(call_id="c2", output="B", item_id="fo2"),
+        _assistant_item("Done.", item_id="a2"),
+    ]
+    records = pi_session_records_from_session_items(
+        items,
+        session_id="conv_abc",
+        external_session_id=_EXTERNAL_ID,
+        cwd=Path("/repo"),
+    )
+    entries = records[1:]
+    assert [entry["message"]["role"] for entry in entries] == [
+        "user",
+        "assistant",
+        "toolResult",
+        "toolResult",
+        "assistant",
+    ]
+    assistant_content = entries[1]["message"]["content"]
+    assert [block["type"] for block in assistant_content] == ["toolCall", "toolCall", "text"]
+    assert [block["id"] for block in assistant_content[:2]] == ["c1", "c2"]
+    assert [entry["message"]["toolCallId"] for entry in entries[2:4]] == ["c1", "c2"]
+    for previous, current in itertools.pairwise(entries):
+        assert current["parentId"] == previous["id"]
+
+
+def test_tool_call_without_result_is_dropped_from_assistant_group() -> None:
+    items = [
+        _function_call_item(name="read", call_id="complete", arguments="{}", item_id="fc1"),
+        _function_call_item(name="read", call_id="missing", arguments="{}", item_id="fc2"),
+        _function_output_item(call_id="complete", output="good", item_id="fo1"),
+        _assistant_item("Done.", item_id="a1"),
+    ]
+    records = pi_session_records_from_session_items(
+        items,
+        session_id="conv_abc",
+        external_session_id=_EXTERNAL_ID,
+        cwd=Path("/repo"),
+    )
+    entries = records[1:]
+    assert [entry["message"]["role"] for entry in entries] == [
+        "assistant",
+        "toolResult",
+        "assistant",
+    ]
+    assert [block["id"] for block in entries[0]["message"]["content"]] == ["complete"]
+    assert entries[1]["message"]["toolCallId"] == "complete"
+
+
+def test_mismatched_tool_result_is_dropped_without_dropping_valid_result() -> None:
+    items = [
+        _function_call_item(name="read", call_id="valid", arguments="{}", item_id="fc1"),
+        _function_output_item(call_id="orphan", output="bad", item_id="fo1"),
+        _function_output_item(call_id="valid", output="good", item_id="fo2"),
+    ]
+    records = pi_session_records_from_session_items(
+        items,
+        session_id="conv_abc",
+        external_session_id=_EXTERNAL_ID,
+        cwd=Path("/repo"),
+    )
+    assert [entry["message"]["role"] for entry in records[1:]] == ["assistant", "toolResult"]
+    assert records[2]["message"]["toolCallId"] == "valid"
 
 
 def test_empty_text_items_are_dropped() -> None:
