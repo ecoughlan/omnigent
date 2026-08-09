@@ -3,6 +3,7 @@
 Session model/auth files live in an isolated agent root. Preserve supported
 user resources and context files there while keeping system prompt and session
 files out. Linked resources remain shared and writable, as in standalone Pi.
+Global model login state is copied only when requested.
 """
 
 from __future__ import annotations
@@ -130,26 +131,54 @@ def _symlink_agent_resources(
             )
 
 
+def _copy_global_auth_file(managed_dir: Path, global_agent_dir: Path) -> None:
+    """Copy the user's global ``auth.json`` (CLI logins) into the managed dir.
+
+    The managed dir shadows ``~/.pi/agent``, so without this the session's Pi
+    starts with no login state: the model picker only sees ``models.json``
+    providers, and models authenticated via Pi ``/login`` (Claude, GPT,
+    DeepSeek, …) never appear as switchable. Copy (not symlink) so Pi's own
+    in-session token refreshes never mutate the user's global file.
+    """
+    source = global_agent_dir / "auth.json"
+    if not source.is_file():
+        return
+    try:
+        data = source.read_bytes()
+    except OSError as exc:
+        _logger.warning("Could not read global Pi auth at %s: %s", source, exc)
+        return
+    target = managed_dir / "auth.json"
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+    except OSError as exc:
+        _logger.warning("Could not copy Pi auth into managed dir at %s: %s", target, exc)
+
+
 def prepare_managed_pi_agent_dir(
     managed_dir: Path,
     *,
     overlay: Mapping[str, object] | None = None,
     global_agent_dir: Path | None = None,
     pi_env: Mapping[str, str] | None = None,
+    include_global_auth: bool = True,
 ) -> None:
     """
     Seed a managed ``PI_CODING_AGENT_DIR`` with the user's global Pi settings.
 
     Copies (merges) ``settings.json`` from the user's global agent dir into
-    *managed_dir*, applies *overlay* (e.g. Omnigent retry policy), and
-    links supported resources, and preserves their relative settings paths.
-    Linked resources are writable shared state; Pi may update MCP OAuth tokens.
+    *managed_dir*, applies *overlay* (e.g. Omnigent retry policy), optionally
+    copies model login state, links supported resources, and preserves their
+    relative settings paths. Linked resources are writable shared state;
+    Pi may update MCP OAuth tokens.
     MCP servers the host configures for Claude Code, Codex, or Cursor are added
     through a managed ``mcp.json`` copy when the user's file lacks them (see
     :func:`omnigent.inner.pi_mcp.sync_managed_pi_mcp_config`).
-    Global context files (``AGENTS.md`` et al.) are linked so Pi applies them
-    unless ``--no-context-files`` is set; ``SYSTEM.md``, ``APPEND_SYSTEM.md``
-    and model credentials are not linked.
+    Global context files (``AGENTS.md`` et al.) are linked unless
+    ``--no-context-files`` is set; ``SYSTEM.md``, ``APPEND_SYSTEM.md`` and
+    model credentials are not linked.
 
     Project-scoped ``.pi/settings.json`` at the session cwd is still read by
     Pi at runtime and overrides these global settings per Pi's normal rules.
@@ -160,6 +189,8 @@ def prepare_managed_pi_agent_dir(
         :data:`DEFAULT_PI_AGENT_DIR`.
     :param pi_env: Environment the Pi process will receive, used to resolve host
         MCP placeholders; defaults to ``os.environ``.
+    :param include_global_auth: False for inference-bound sessions, whose
+        credentials and catalog come only from their configured provider.
     """
     agent_root = global_agent_dir if global_agent_dir is not None else DEFAULT_PI_AGENT_DIR
     agent_root = Path(os.path.abspath(agent_root.expanduser()))
@@ -183,6 +214,9 @@ def prepare_managed_pi_agent_dir(
     except OSError as exc:
         _logger.warning("Could not write managed Pi settings at %s: %s", settings_path, exc)
         return
+
+    if include_global_auth:
+        _copy_global_auth_file(managed_dir, agent_root)
 
     _symlink_agent_resources(managed_dir, agent_root)
     from omnigent.inner.pi_mcp import sync_managed_pi_mcp_config

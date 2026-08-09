@@ -131,6 +131,8 @@ async def test_auto_create_pi_terminal_threads_spec_model_into_models_json(
     # (and its models.json) lands somewhere isolated and inspectable.
     monkeypatch.setattr(pi_bridge, "_BRIDGE_ROOT", tmp_path / "pi-native")
     monkeypatch.setenv("OMNIGENT_RUNNER_WORKSPACE", str(workspace))
+    # Global Pi providers are merged into the session; keep the host's out.
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "global-pi"))
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://ap.example")
     monkeypatch.setattr("omnigent.runner._entry._make_auth_token_factory", lambda: None)
     # Resolve a Pi executable without requiring the real binary on PATH.
@@ -280,6 +282,8 @@ async def test_auto_create_pi_terminal_no_spec_model_uses_provider_default(
     workspace.mkdir()
     monkeypatch.setattr(pi_bridge, "_BRIDGE_ROOT", tmp_path / "pi-native")
     monkeypatch.setenv("OMNIGENT_RUNNER_WORKSPACE", str(workspace))
+    # Global Pi providers are merged into the session; keep the host's out.
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "global-pi"))
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://ap.example")
     monkeypatch.setattr("omnigent.runner._entry._make_auth_token_factory", lambda: None)
     monkeypatch.setattr(
@@ -381,6 +385,8 @@ async def test_auto_create_pi_terminal_bakes_tunnel_token_into_config(
     workspace.mkdir()
     monkeypatch.setattr(pi_bridge, "_BRIDGE_ROOT", tmp_path / "pi-native")
     monkeypatch.setenv("OMNIGENT_RUNNER_WORKSPACE", str(workspace))
+    # Global Pi providers are merged into the session; keep the host's out.
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "global-pi"))
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://ap.example")
     # No Databricks bearer (guest-on-shared-host), but a tunnel binding token.
     monkeypatch.setattr("omnigent.runner._entry._make_auth_token_factory", lambda: None)
