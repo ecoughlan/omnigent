@@ -198,11 +198,12 @@ async def test_auto_create_pi_terminal_threads_spec_model_into_models_json(
     assert "--model" in args
     assert args[args.index("--model") + 1] == "claude-opus-4-7"
     assert "--provider" in args
+    assert args[args.index("--provider") + 1] == "anthropic"
 
     # The managed config dir env was set and its models.json selects the override.
     agent_dir = Path(launched["env"]["PI_CODING_AGENT_DIR"])
     models = json.loads((agent_dir / "models.json").read_text(encoding="utf-8"))
-    entry = models["providers"]["omnigent"]["models"][0]
+    entry = models["providers"]["anthropic"]["models"][0]
     assert entry["id"] == "claude-opus-4-7"
     assert entry.get("reasoning") is True
 
@@ -300,7 +301,7 @@ async def test_auto_create_pi_terminal_no_spec_model_uses_provider_default(
     assert captured["model"] is None
     agent_dir = Path(launched["env"]["PI_CODING_AGENT_DIR"])
     models = json.loads((agent_dir / "models.json").read_text(encoding="utf-8"))
-    entry = models["providers"]["omnigent"]["models"][0]
+    entry = models["providers"]["anthropic"]["models"][0]
     assert entry["id"] == "claude-sonnet-4-6"
     assert entry.get("reasoning") is True
 
