@@ -134,7 +134,7 @@ def test_generic_gateway_chat_wire_models_json_is_bare() -> None:
     assert provider.model == "glm-5.2"
 
     cfg = provider.to_models_config()
-    models = cfg["providers"]["omnigent"]["models"]
+    models = cfg["providers"]["litellm"]["models"]
     assert len(models) == 1
     entry = models[0]
 
@@ -167,7 +167,7 @@ def test_generic_gateway_chat_wire_reasoning_disabled() -> None:
     assert provider.api == "openai-completions"
 
     cfg = provider.to_models_config()
-    entry = cfg["providers"]["omnigent"]["models"][0]
+    entry = cfg["providers"]["litellm"]["models"][0]
 
     # Bug: reasoning is absent.  After the fix, the entry must carry
     # ``reasoning: true`` for a reasoning-model id.
@@ -197,7 +197,7 @@ def test_generic_gateway_responses_wire_models_json_is_bare() -> None:
     assert provider.model == "gpt-4o-mini"
 
     cfg = provider.to_models_config()
-    entry = cfg["providers"]["omnigent"]["models"][0]
+    entry = cfg["providers"]["litellm"]["models"][0]
 
     assert "contextWindow" in entry, (
         "gateway bare entry reproduced (responses wire): models.json entry has no "
@@ -231,7 +231,7 @@ def test_generic_gateway_anthropic_proxy_lacks_context_limits() -> None:
     assert provider.model == "glm-5.2"
 
     cfg = provider.to_models_config()
-    entry = cfg["providers"]["omnigent"]["models"][0]
+    entry = cfg["providers"]["litellm"]["models"][0]
 
     # reasoning is already set (because api==anthropic-messages), but
     # contextWindow and maxTokens are absent — Pi truncates at 128k/16k.
