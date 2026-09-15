@@ -1392,7 +1392,7 @@ def test_databricks_prefixed_override_normalized_for_inline_openai() -> None:
     # The gateway prefix is stripped for the vendor-direct OpenAI endpoint.
     assert provider.model == "gpt-5-4"
     cfg = provider.to_models_config()
-    entry = cfg["providers"]["openai-gateway"]["models"][0]
+    entry = cfg["providers"]["openai-direct"]["models"][0]
     assert entry["id"] == "gpt-5-4"
     # The entry carries input metadata rather than a bare id-only dict.
     assert entry.get("input") == ["text", "image"]
@@ -1740,7 +1740,7 @@ def test_gateway_override_keeps_databricks_prefix_for_anthropic_family() -> None
     assert provider.credential_warning is None
     cfg = provider.to_models_config()
     assert "databricks-claude-fable-5-1" in [
-        m["id"] for m in cfg["providers"]["omnigent"]["models"]
+        m["id"] for m in cfg["providers"]["corp-gateway"]["models"]
     ]
 
 
