@@ -1140,7 +1140,7 @@ def test_provider_launch_accepts_provider_qualified_selection(tmp_path: Path) ->
         ),
         # The picker offered the model on the Responses surface; discovery then
         # failed at launch and the single-family fallback owns it again.
-        (None, "omnigent-openai/system.ai.gpt-5", "omnigent"),
+        (None, "omnigent-openai/system.ai.gpt-5", "openai-gateway"),
     ],
     ids=["saved-primary-selection-after-discovery", "picker-selection-after-discovery-failure"],
 )
