@@ -82,6 +82,7 @@ def test_configured_harness_map_pi_installed_no_provider_needs_auth(
     """
     monkeypatch.setattr(hr, "harness_cli_installed", lambda _key, **_kw: True)
     monkeypatch.setattr(hr, "_family_provider_configured", lambda _h: False)
+    monkeypatch.setattr(hr, "load_config", dict)
     cmap = hr.configured_harness_map()
     assert cmap.get("pi") == "needs-auth"
     assert cmap.get("pi-native") == "needs-auth"
