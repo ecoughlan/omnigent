@@ -131,3 +131,30 @@ def test_legacy_curated_launch_preserves_globals_without_widening_scope(
     assert settings["enabledModels"] == ["company/vendor/fast", "company/vendor/strong"]
     assert (managed / "auth.json").read_bytes() == (global_agent / "auth.json").read_bytes()
     assert not (managed / "auth.json").is_symlink()
+
+
+@pytest.mark.parametrize("selection", [None, "omnigent-openai/shared-model"])
+def test_global_provider_cannot_reroute_managed_default_or_saved_selection(
+    tmp_path: Path, global_agent: Path, selection: str | None
+) -> None:
+    """Fallback routing follows the managed model, not a matching personal model."""
+    config_path = global_agent / "models.json"
+    config = json.loads(config_path.read_text())
+    for payload in config["providers"].values():
+        payload["models"] = [{"id": "shared-model"}]
+    config_path.write_text(json.dumps(config))
+    provider = creds.PiProviderConfig(
+        provider_id="company",
+        base_url="https://managed.example/v1",
+        api="openai-completions",
+        model="shared-model",
+        api_key="test-managed",
+        auth_header=True,
+    )
+    managed = tmp_path / "managed"
+    _, args, _ = creds.pi_native_provider_launch(
+        managed, provider, selection=selection, global_agent_dir=global_agent
+    )
+    assert args[:4] == ["--provider", "company", "--model", "shared-model"]
+    rendered = json.loads((managed / "models.json").read_text())
+    assert set(rendered["providers"]) == {"company", "personal", "omnigent-openai"}
