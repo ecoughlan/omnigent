@@ -8,10 +8,10 @@ page to force re-authentication.
 In accounts mode ``?reauth=1`` is honoured by the SPA login form (it shows the
 password field even when the user is already signed in).  In OIDC mode
 ``/auth/login`` must forward a forced-re-authentication demand to the IdP —
-``prompt=login`` plus ``max_age=0`` — so the IdP cannot silently reuse an
+``prompt=login`` — so the IdP cannot silently reuse an
 existing IdP session.
 
-``/auth/login`` must both (a) forward ``prompt=login`` + ``max_age=0`` to the
+``/auth/login`` must both (a) forward ``prompt=login`` to the
 IdP and (b) stamp ``reauth_at`` into the signed state cookie so the callback can
 verify the id_token's ``auth_time`` proves a real re-authentication.  Without
 (a) the bypass was:
@@ -117,7 +117,7 @@ def test_login_without_reauth_sends_no_prompt(login_client: TestClient) -> None:
 
 
 def test_login_with_reauth_forces_prompt_login_at_idp(login_client: TestClient) -> None:
-    """OIDC /auth/login?reauth=1 must forward prompt=login + max_age=0 to the IdP.
+    """OIDC /auth/login?reauth=1 must forward prompt=login (without max_age) to the IdP.
 
     This is the anti-phishing gate: when the device-grant consent page detects a
     stale session it bounces here with reauth=1.  Without prompt=login the IdP
@@ -136,8 +136,9 @@ def test_login_with_reauth_forces_prompt_login_at_idp(login_client: TestClient) 
         "so the IdP cannot silently reuse an existing session; "
         f"got authorization URL: {location!r}"
     )
-    assert params.get("max_age") == ["0"], (
-        "/auth/login?reauth=1 must add max_age=0 to the IdP authorization URL "
+    assert "max_age" not in params, (
+        "/auth/login?reauth=1 must not add max_age=0: Authelia never considers "
+        "max_age=0 satisfied, so the consent page loops; "
         f"got authorization URL: {location!r}"
     )
 

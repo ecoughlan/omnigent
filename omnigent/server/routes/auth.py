@@ -355,8 +355,11 @@ def create_auth_router(
         if reauth:
             # Ask the IdP to force the user to re-enter credentials
             # rather than silently reusing an existing IdP session.
+            # prompt=login alone is sufficient: /callback verifies the
+            # id_token's auth_time. max_age=0 is deliberately not sent
+            # because Authelia treats it as never satisfiable and loops
+            # the consent page back to the password prompt forever.
             params["prompt"] = "login"
-            params["max_age"] = "0"
         endpoint = urlsplit(config.authorization_endpoint)
         query = [
             (name, value)
@@ -497,7 +500,7 @@ def create_auth_router(
             return fail(400, "Could not determine user email from IdP", "server_error")
 
         # Forced re-auth verification (anti-phishing device-consent gate).
-        # /login stamped reauth_at when it sent prompt=login + max_age=0.
+        # /login stamped reauth_at when it sent prompt=login.
         # A conformant IdP must then set the id_token's auth_time to the
         # actual (re-)authentication instant; if it silently reused its
         # session, auth_time predates our demand and we must refuse rather
