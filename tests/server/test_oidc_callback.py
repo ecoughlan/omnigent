@@ -624,7 +624,7 @@ def test_cli_ticket_generic_oidc_reauth_round_trip(
     login = client.get(str(login_url), follow_redirects=False)
     authorization = parse_qs(urlsplit(login.headers["location"]).query)
     assert authorization["prompt"] == ["login"]
-    assert authorization["max_age"] == ["0"]
+    assert "max_age" not in authorization
     state = jwt.decode(
         client.cookies[_AUTH_STATE_COOKIE_PLAIN], _TEST_SECRET, algorithms=["HS256"]
     )
