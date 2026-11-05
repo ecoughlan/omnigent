@@ -27,7 +27,7 @@ from tests._helpers.pi_native import seed_pi_own_login_catalog
 
 @pytest.fixture(autouse=True)
 def _isolate_host_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("omnigent.inner.pi_settings.DEFAULT_PI_AGENT_DIR", tmp_path / "global-pi")
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "global-pi"))
     monkeypatch.setattr(
         "omnigent.models.model_catalog.resolve_catalog_model",
         lambda provider_name, *, family, **kwargs: SimpleNamespace(
@@ -1161,7 +1161,10 @@ def test_generated_token_command_reports_only_safe_results(
         assert stat.S_IMODE(file.stat().st_mode) == 0o600
 
 
-def test_provider_launch_merges_global_models_providers(tmp_path: Path) -> None:
+@pytest.mark.parametrize("explicit_root", [False, True])
+def test_provider_launch_merges_global_models_providers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_root: bool
+) -> None:
     """The managed models.json keeps the user's global Pi providers.
 
     The per-session managed config dir shadows ``~/.pi/agent``; merging the
@@ -1202,7 +1205,12 @@ def test_provider_launch_merges_global_models_providers(tmp_path: Path) -> None:
         )
     )
     agent_dir = tmp_path / "pi-agent"
-    creds.pi_native_provider_launch(agent_dir, provider, global_agent_dir=global_agent)
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(global_agent))
+    (global_agent / "auth.json").write_text('{"test-login": {"type": "api_key", "key": "test"}}')
+    creds.pi_native_provider_launch(
+        agent_dir, provider, global_agent_dir=global_agent if explicit_root else None
+    )
+    assert (agent_dir / "auth.json").read_bytes() == (global_agent / "auth.json").read_bytes()
 
     written = json.loads((agent_dir / "models.json").read_text(encoding="utf-8"))
     providers = written["providers"]
