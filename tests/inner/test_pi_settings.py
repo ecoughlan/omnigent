@@ -120,7 +120,10 @@ def test_prepare_managed_pi_agent_dir_deep_merges_nested_overlay(tmp_path: Path)
     }
 
 
-def test_prepare_managed_pi_agent_dir_links_only_supported_resources(tmp_path: Path) -> None:
+@pytest.mark.parametrize("include_global_auth", [False, True])
+def test_prepare_managed_pi_agent_dir_links_only_supported_resources(
+    tmp_path: Path, include_global_auth: bool
+) -> None:
     """Supported resources and context files are linked; prompts and session state are not."""
     global_agent = tmp_path / "global-agent"
     for directory in (
@@ -149,7 +152,15 @@ def test_prepare_managed_pi_agent_dir_links_only_supported_resources(tmp_path: P
     managed = tmp_path / "managed"
     managed.mkdir()
 
-    prepare_managed_pi_agent_dir(managed, global_agent_dir=global_agent)
+    prepare_managed_pi_agent_dir(
+        managed, global_agent_dir=global_agent, include_global_auth=include_global_auth
+    )
+    auth_path = managed / "auth.json"
+    assert auth_path.exists() is include_global_auth
+    assert not auth_path.is_symlink()
+    if include_global_auth:
+        assert auth_path.read_bytes() == (global_agent / "auth.json").read_bytes()
+        assert stat.S_IMODE(auth_path.stat().st_mode) == 0o600
 
     for name in (
         "npm",
@@ -168,7 +179,6 @@ def test_prepare_managed_pi_agent_dir_links_only_supported_resources(tmp_path: P
         assert (managed / name).readlink() == global_agent / name
     for name in (
         "sessions",
-        "auth.json",
         "models.json",
         "SYSTEM.md",
         "APPEND_SYSTEM.md",
