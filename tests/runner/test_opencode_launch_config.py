@@ -99,7 +99,12 @@ async def _launch_until_boot(*, client_surface: str | None = None, **kwargs: Any
 
 async def test_launch_writes_v2_config_with_ask_all_permissions(
     launch_env: dict[str, Any],
+    tmp_path: Path,
 ) -> None:
+    user_plugin = tmp_path / "no-user-config" / "opencode" / "plugins" / "local.ts"
+    user_plugin.parent.mkdir(parents=True)
+    user_plugin.write_text('export default { id: "local", setup() {} }', encoding="utf-8")
+
     async def _ensure_relay(*args: Any, **kwargs: Any) -> None:
         return None
 
@@ -109,6 +114,7 @@ async def test_launch_writes_v2_config_with_ask_all_permissions(
         agent_spec=AgentSpec(spec_version=1, name="rules", instructions="Agent rules."),
     )
     xdg = bridge_dir / "xdg-config"
+    assert (xdg / "opencode" / "plugins" / "local.ts").read_bytes() == user_plugin.read_bytes()
     written = json.loads((xdg / "opencode" / "opencode.json").read_text(encoding="utf-8"))
     assert written["permissions"] == [{"action": "*", "resource": "*", "effect": "ask"}]
     assert written["mcp"]["servers"]["omnigent"]["codemode"] is False

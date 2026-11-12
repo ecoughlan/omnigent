@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
+import urllib.parse
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -96,6 +98,41 @@ def mock_host(
     oc.require_opencode()
     root = tmp_path_factory.mktemp("opencode-mock-host")
     with isolated_host(root, live_server, config=_host_config(mock_llm_server_url)) as host:
+        plugin = host.home / ".config" / "opencode" / "plugins" / "auto-discovered.js"
+        plugin.parent.mkdir(parents=True)
+        plugin.write_text(
+            'export default { id: "e2e.user-plugin", async setup(ctx) {\n'
+            '  await ctx.tool.hook("execute.before", event => {\n'
+            '    if (event.tool === "shell" && event.input.command === "ls")\n'
+            '      event.input.command += "; printf USER_PLUGIN_LOADED";\n'
+            "  });\n"
+            "} };\n",
+            encoding="utf-8",
+        )
+        mcp_script = root / "runtime_mcp.py"
+        mcp_script.write_text(
+            "from mcp.server.fastmcp import FastMCP\n"
+            'server = FastMCP("runtime")\n'
+            "@server.tool()\n"
+            "def echo(text: str) -> str:\n"
+            "    return text\n"
+            'server.run(transport="stdio")\n',
+            encoding="utf-8",
+        )
+        (plugin.parent.parent / "opencode.json").write_text(
+            json.dumps(
+                {
+                    "mcp": {
+                        "runtime": {
+                            "type": "local",
+                            "command": [sys.executable, str(mcp_script)],
+                            "enabled": False,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
         host.wait_online(http_client, timeout=60, poll_interval=0.2)
         yield host, mock_llm_server_url
 
@@ -171,6 +208,71 @@ def _gate_pending(mock_url: str) -> bool:
     return bool(response.json().get("pending"))
 
 
+def test_disabled_user_mcp_can_be_enabled_and_disabled_at_runtime(
+    opencode_host: oc.OpenCodeHost,
+    mock_url: str,
+) -> None:
+    workspace = opencode_host.workspace("runtime-mcp")
+    session_id = opencode_host.create_session(workspace)
+    state = opencode_bridge.read_bridge_state(oc.bridge_dir(opencode_host.client, session_id))
+    assert state is not None
+    headers = {
+        **state.auth_headers(),
+        "x-opencode-directory": urllib.parse.quote(str(workspace), safe="!~*'()"),
+    }
+    with httpx.Client(base_url=state.server_base_url, headers=headers, timeout=30) as native:
+        poll_until(
+            lambda: any(
+                row["name"] == "runtime" and row["status"]["status"] == "disabled"
+                for row in native.get("/api/mcp").json()["data"]
+            ),
+            timeout_s=30,
+            interval_s=0.2,
+        )
+        native.post("/api/experimental/mcp/runtime/connect").raise_for_status()
+        marker = _marker("MCP-CATALOG")
+        _script(mock_url, marker, [{"text": f"CATALOG-{marker}"}])
+        oc.turn(opencode_host.client, session_id, marker)
+        requests = _requests_with(mock_url, marker)
+        names = {
+            tool["function"]["name"] for request in requests for tool in request.get("tools", [])
+        }
+        tool_name = next(
+            name for name in names if name.startswith("runtime_") and name.endswith("echo")
+        )
+        marker = _marker("MCP-CALL")
+        _script(
+            mock_url,
+            marker,
+            [
+                {
+                    "tool_calls": [
+                        {
+                            "call_id": "runtime_echo",
+                            "name": tool_name,
+                            "arguments": json.dumps({"text": f"MCP-OUTPUT-{marker}"}),
+                        }
+                    ]
+                },
+                {"text": f"MCP-DONE-{marker}"},
+            ],
+        )
+        items = oc.turn(opencode_host.client, session_id, marker)
+        assert any(f"MCP-OUTPUT-{marker}" in output for output in oc.outputs(items)), (
+            oc.transcript(items)
+        )
+        native.post("/api/experimental/mcp/runtime/disconnect").raise_for_status()
+        marker = _marker("MCP-DISABLED")
+        _script(mock_url, marker, [{"text": f"DISABLED-{marker}"}])
+        oc.turn(opencode_host.client, session_id, marker)
+        for request in _requests_with(mock_url, marker):
+            assert tool_name not in {tool["function"]["name"] for tool in request.get("tools", [])}
+    config = json.loads(
+        (Path(state.xdg_config_home or "") / "opencode" / "opencode.json").read_text()
+    )
+    assert config["mcp"]["servers"]["runtime"]["disabled"] is True
+
+
 def test_reply_reaches_the_bound_mock_and_renders_once(
     opencode_host: oc.OpenCodeHost, mock_url: str
 ) -> None:
@@ -213,6 +315,9 @@ def test_approved_tool_result_reaches_the_next_request(
         r for r in _requests_with(mock_url, marker) if "omnigent_marker.txt" in json.dumps(r)
     ]
     assert follow_up, "the tool output never reached the model's next request"
+    assert any("USER_PLUGIN_LOADED" in json.dumps(r) for r in follow_up), (
+        "the auto-discovered user plugin was lost in the private OpenCode config"
+    )
 
 
 def test_denied_tool_does_not_run_and_the_session_continues(

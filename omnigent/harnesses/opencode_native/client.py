@@ -30,10 +30,10 @@ from omnigent.util.json_types import JsonObject as _JsonObject
 
 _logger = logging.getLogger(__name__)
 
-# Supported OpenCode CLI/API range: the 2.0.x ``/api/*`` protocol, from the release
-# the wire fixtures were captured on. Widen only after validating a newer minor.
+# The 2.x ``/api/*`` contract is validated through 2.3.0. Keep runtime and
+# onboarding on the same bounded range; newer minors need wire/journey validation.
 OPENCODE_MIN_VERSION = "2.0.18"
-OPENCODE_MAX_VERSION_EXCLUSIVE = "2.1.0"
+OPENCODE_MAX_VERSION_EXCLUSIVE = "2.4.0"
 
 _DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 

@@ -423,6 +423,42 @@ def test_seed_opencode_auth_noop_without_source(
     assert bridge.seeded_provider_ids(bridge_dir) == frozenset()
 
 
+@pytest.mark.parametrize("allow_symlinks", [True, False])
+def test_seed_user_resources_preserves_private_config(
+    bridge_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allow_symlinks: bool
+) -> None:
+    import omnigent.harnesses.opencode_native.bridge as bridge
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user-config"))
+    source = tmp_path / "user-config" / "opencode"
+    for name in ("plugins/local.ts", "skills/example/SKILL.md", "node_modules/example/index.js"):
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("user resource", encoding="utf-8")
+    (source / "opencode.json").write_text('{"model":"user/model"}', encoding="utf-8")
+    (source / "tui.json").write_text('{"theme":"dark"}', encoding="utf-8")
+    target = xdg_config_home_for_bridge_dir(bridge_dir) / "opencode"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "opencode.json").write_text("private config", encoding="utf-8")
+    (target / "AGENTS.md").write_text("framework instructions", encoding="utf-8")
+    if not allow_symlinks:
+
+        def unavailable(*args: object, **kwargs: object) -> None:
+            raise OSError("symlink privilege unavailable")
+
+        monkeypatch.setattr(Path, "symlink_to", unavailable)
+    bridge.seed_opencode_user_resources(bridge_dir)
+    bridge.seed_opencode_user_resources(bridge_dir)
+    for name in ("plugins/local.ts", "skills/example/SKILL.md", "node_modules/example/index.js"):
+        assert (target / name).read_text(encoding="utf-8") == "user resource"
+    assert not (target / "plugins").is_symlink()
+    (target / "plugins" / "local.ts").unlink()
+    assert (source / "plugins" / "local.ts").is_file()
+    assert (target / "opencode.json").read_text(encoding="utf-8") == "private config"
+    assert (target / "AGENTS.md").read_text(encoding="utf-8") == "framework instructions"
+    assert not (target / "tui.json").is_symlink()
+
+
 def test_user_opencode_config_paths_default_location(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

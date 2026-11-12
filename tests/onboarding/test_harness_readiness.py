@@ -135,7 +135,9 @@ def _write_fake_executable(directory: Path, name: str, output: str | None) -> Pa
     return script
 
 
-def _all_clis_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+def _all_clis_installed(
+    monkeypatch: pytest.MonkeyPatch, *, opencode_version: str = "2.0.18"
+) -> None:
     """Make every harness CLI binary appear installed.
 
     :param monkeypatch: The pytest monkeypatch fixture.
@@ -152,11 +154,9 @@ def _all_clis_installed(monkeypatch: pytest.MonkeyPatch) -> None:
             # Native harnesses also need a supported tmux on the same PATH.
             return subprocess.CompletedProcess(args=argv, returncode=0, stdout="tmux 3.6a\n")
         if len(argv) >= 2 and argv[1] == "--version":
-            # OpenCode's declared range is [2.0.0, 3.0.0); Cursor uses calendar
-            # versions and needs a build after 2026-06-01; everything else is
-            # fine with a generous semver placeholder.
+            # OpenCode has bounded semver support; Cursor uses calendar versions.
             if argv[0].endswith("opencode"):
-                version = "opencode v2.0.18\n"
+                version = f"opencode v{opencode_version}\n"
             elif argv[0].endswith("cursor-agent") or argv[0].endswith("hermes"):
                 version = "2026.07.01\n"
             else:
@@ -363,9 +363,16 @@ def test_auth_aware_native_harness_needs_auth_when_installed_not_signed_in(
     assert result["claude-native"] == "needs-auth"
 
 
-def test_opencode_ready_without_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An installed OpenCode is launchable with no credential: its free models need none."""
-    _all_clis_installed(monkeypatch)
+@pytest.mark.parametrize(
+    "version,expected",
+    [("2.0.18", True), ("2.2.7", True), ("2.3.0", True), ("2.4.0", "version-too-low")],
+)
+def test_opencode_ready_without_provider_credentials(
+    monkeypatch: pytest.MonkeyPatch, version: str, expected: bool | str
+) -> None:
+    """Supported releases need no credential or bypass; newer minors stay gated."""
+    monkeypatch.delenv("OMNIGENT_OPENCODE_SKIP_VERSION_CHECK", raising=False)
+    _all_clis_installed(monkeypatch, opencode_version=version)
     import omnigent.onboarding.opencode_auth as oc
 
     monkeypatch.setattr(
@@ -373,7 +380,9 @@ def test_opencode_ready_without_provider_credentials(monkeypatch: pytest.MonkeyP
         "opencode_auth_summary",
         lambda: oc.OpenCodeAuthSummary(installed=True, stored_providers=(), env_providers=()),
     )
-    assert configured_harness_map()["opencode-native"] is True
+    result = configured_harness_map()
+    for harness in ("opencode", "opencode-native", "native-opencode"):
+        assert result[harness] == expected
 
 
 def test_opencode_ready_via_bedrock_profile_without_stored_login(
@@ -952,7 +961,9 @@ def test_configured_harness_map_reports_version_too_low_for_outdated_clis(
     of being told the binary is missing.
     """
     monkeypatch.setattr(hi.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(hi, "harness_cli_installed", lambda _key, **_kw: False)
+    monkeypatch.setattr(
+        "omnigent.onboarding.harness_readiness.harness_cli_installed", lambda _key, **_kw: False
+    )
     monkeypatch.setattr(hi, "harness_cli_logged_in", lambda _key, **_kw: True)
     result = configured_harness_map()
     for harness in (

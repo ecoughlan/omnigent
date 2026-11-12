@@ -137,10 +137,9 @@ _ANTIGRAVITY_MIN_VERSION = "1.1.13"
 # OpenCode native harness CLI (``opencode serve`` plus the ``--server`` TUI),
 # installed via the ``@opencode/cli`` npm package. No login/logout/status argv
 # is wired yet — readiness is binary-only until an auth check exists. Pinned
-# exactly: OpenCode ships 2.0.x patches often, so a range would install an
-# untested release.
+# exactly so setup does not install an untested release.
 OPENCODE_KEY = "opencode"
-_OPENCODE_PACKAGE = "@opencode/cli@2.0.32"
+_OPENCODE_PACKAGE = "@opencode/cli@2.3.0"
 # v1 ``opencode-ai`` links the same global ``opencode`` bin and npm refuses to
 # overwrite another package's bin (EEXIST). Omnigent doesn't remove packages it
 # didn't install, so setup stops with a message instead of uninstalling it.
@@ -239,7 +238,7 @@ _HARNESS_INSTALL: dict[str, HarnessInstallSpec] = {
         # ``pi >= 0.79.0``; older CLIs would prompt mid-session.
         min_version=_PI_MIN_VERSION,
     ),
-    # Pin the install to the supported 2.0.x line. The same bounds are enforced
+    # Pin the install to a validated release. The same bounds are enforced
     # in setup via ``min_version`` / ``max_version_exclusive`` so the
     # install/upgrade prompt fires before the runtime gate does.
     OPENCODE_KEY: HarnessInstallSpec(

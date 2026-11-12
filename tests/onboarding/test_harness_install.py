@@ -1122,11 +1122,11 @@ def test_install_harness_cli_runs_npm_then_rechecks(monkeypatch: pytest.MonkeyPa
 
 
 def test_opencode_install_spec_pins_v2_cli() -> None:
-    """OpenCode installs the v2 ``@opencode/cli`` package, pinned to 2.0.x."""
+    """OpenCode installs the exact v2 release validated by the native journeys."""
     spec = hi.harness_install_spec(hi.OPENCODE_KEY)
     assert spec is not None
     assert spec.binary == "opencode"
-    assert spec.package == "@opencode/cli@2.0.32"
+    assert spec.package == "@opencode/cli@2.3.0"
 
 
 def test_opencode_install_never_removes_v1_package() -> None:
@@ -1137,9 +1137,9 @@ def test_opencode_install_never_removes_v1_package() -> None:
     script = argv[2]
     assert "npm rm -g opencode-ai >" not in script
     assert script.index("npm ls -g opencode-ai") < script.index(
-        "npm install -g @opencode/cli@2.0.32"
+        "npm install -g @opencode/cli@2.3.0"
     )
-    assert hi.harness_install_display(hi.OPENCODE_KEY) == ("npm install -g @opencode/cli@2.0.32")
+    assert hi.harness_install_display(hi.OPENCODE_KEY) == ("npm install -g @opencode/cli@2.3.0")
 
 
 def _stub_opencode_version(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
@@ -1174,7 +1174,7 @@ def test_install_harness_cli_runs_opencode_guard_and_install(
         "Popen",
         fake_installer(calls=calls, on_call=lambda: state.update(installed=True)),
     )
-    _stub_opencode_version(monkeypatch, "2.0.32")
+    _stub_opencode_version(monkeypatch, "2.3.0")
 
     assert hi.install_harness_cli(hi.OPENCODE_KEY) is True
     assert calls == [["bash", "-c", hi._OPENCODE_INSTALL_SCRIPT]]
@@ -1237,7 +1237,7 @@ def test_opencode_install_script_installs_when_v1_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When ``npm ls -g opencode-ai`` fails (not installed), the script
-    proceeds straight to ``npm install -g @opencode/cli@2.0.32``."""
+    proceeds straight to ``npm install -g @opencode/cli@2.3.0``."""
     npm_log = tmp_path / "npm-calls.log"
     fake_npm = tmp_path / "npm"
     fake_npm.write_text(
@@ -1255,7 +1255,7 @@ def test_opencode_install_script_installs_when_v1_absent(
 
     assert result.returncode == 0
     calls = npm_log.read_text().splitlines()
-    assert any(call.startswith("install -g @opencode/cli@2.0.32") for call in calls)
+    assert any(call.startswith("install -g @opencode/cli@2.3.0") for call in calls)
 
 
 def test_install_harness_cli_runs_hermes_installer_then_rechecks(
@@ -1776,7 +1776,7 @@ def test_ui_setup_steps_generic_for_non_installable() -> None:
 @pytest.mark.parametrize(
     "key,min_version,max_version_exclusive",
     [
-        (hi.OPENCODE_KEY, "2.0.18", "2.1.0"),
+        (hi.OPENCODE_KEY, "2.0.18", "2.4.0"),
         (hi.CURSOR_KEY, "2026.06.02", None),
         (hi.KIMI_KEY, "0.7.0", None),
         (ANTHROPIC_FAMILY, "2.1.161", None),
@@ -1804,10 +1804,12 @@ def test_versioned_specs_declare_bounds(
     [
         ("1.18.16", False),  # v1 line, below min
         ("2.0.17", False),  # 2.0.x before the validated release
-        ("2.1.0", False),  # at max exclusive: an unvalidated minor
+        ("2.4.0", False),  # at max exclusive: an unvalidated minor
         ("3.0.0", False),  # above max
         ("2.0.18", True),  # min inclusive
         ("opencode v2.0.25", True),  # real v2 --version output, later patch
+        ("opencode v2.2.7", True),  # earlier validated minor
+        ("opencode v2.3.0", True),  # validated newer minor, no bypass needed
     ],
 )
 def test_harness_cli_installed_checks_version_for_versioned_specs(
@@ -1819,7 +1821,7 @@ def test_harness_cli_installed_checks_version_for_versioned_specs(
 
     def _run(argv: list[str], **k: object) -> subprocess.CompletedProcess[str]:
         if len(argv) >= 2 and argv[1] == "--version":
-            # OpenCode's supported range is [2.0.18, 2.1.0).
+            # OpenCode's supported range is [2.0.18, 2.4.0).
             return subprocess.CompletedProcess(
                 args=argv, returncode=0, stdout=f"{version}\n", stderr=""
             )

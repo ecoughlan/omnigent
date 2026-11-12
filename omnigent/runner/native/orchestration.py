@@ -1799,6 +1799,7 @@ async def _auto_create_opencode_terminal(
         connect_env_provider_keys,
         prepare_bridge_dir,
         seed_opencode_auth,
+        seed_opencode_user_resources,
         seeded_provider_ids,
         write_bridge_state,
         write_opencode_policy_plugin,
@@ -1848,6 +1849,7 @@ async def _auto_create_opencode_terminal(
     # plugins, instructions, and an ask-all permission ruleset so every tool call
     # raises permission.asked for the forwarder's policy gate.
     xdg_config_home = xdg_config_home_for_bridge_dir(bridge_dir)
+    await asyncio.to_thread(seed_opencode_user_resources, bridge_dir)
     managed_opencode_broker_cmd: str | None = None
     extra_providers: dict[str, dict[str, object]] = {}
     plugin_paths: list[str] = []

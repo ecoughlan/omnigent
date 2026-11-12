@@ -11,16 +11,18 @@ into the session, and web turns are injected over loopback HTTP.
 
 ## Supported version
 
-OpenCode **2.0.18 or a later 2.0.x patch** (`>=2.0.18,<2.1.0`), published on npm
-as `@opencode/cli`. Newer minors are refused until they are validated. OpenCode
+OpenCode **2.0.18 through 2.3.x** (`>=2.0.18,<2.4.0`), published on npm
+as `@opencode/cli`. The wire contract and native session journeys have been
+validated on **2.3.0**. Newer minors are refused until validated. OpenCode
 1.x (`opencode-ai`) is no longer supported. A host running an unsupported version
 reports the harness as *outdated* until it is upgraded.
-`OMNIGENT_OPENCODE_SKIP_VERSION_CHECK=1` bypasses the gate at your own risk.
+No bypass is needed for supported versions. `OMNIGENT_OPENCODE_SKIP_VERSION_CHECK=1`
+only bypasses the runtime gate at your own risk; it does not override host readiness.
 
 ## Install and sign in
 
     npm rm -g opencode-ai            # only if OpenCode 1.x is installed
-    npm i -g @opencode/cli@2.0.32
+    npm i -g @opencode/cli@2.3.0
     opencode auth login              # optional; free models need no sign-in
     omnigent opencode
 
@@ -97,6 +99,19 @@ Images attached in the web UI are sent as `data:` URIs. Other attachments are
 flattened to text. A message sent during a running turn is delivered as a
 *steer*. Queued messages use OpenCode's own queue.
 
+## User resources and runtime MCP controls
+
+The private config retains auto-discovered user plugins, skills, agents and commands
+from the host's OpenCode config directory. Entries are linked individually (copied
+when symlinks are unavailable); generated configuration and framework instructions
+remain private. TUI preferences are copied without rewriting the user's settings.
+
+Disabled user MCP servers stay disabled initially. OpenCode can connect and disconnect
+them at runtime without changing that default, using its MCP controls or the
+`POST /api/experimental/mcp/<name>/connect` and `.../disconnect` endpoints on the
+conversation's private server. Connected tools still go through Omnigent's permission
+policy; disconnecting removes them from the model's tool catalog.
+
 ## One server per conversation
 
 Each conversation gets its own `opencode serve --stdio` process, its own
@@ -118,6 +133,12 @@ replays the history as a text preamble instead.
 
 ## Known limits
 
+- **Legacy plugins.** Protocol compatibility does not imply compatibility with
+  OpenCode 1.x plugins. OpenCode 2.x requires a default plugin definition with
+  an `id` and `setup` or `effect`; old hook-function exports must be ported.
+  Check plugin state after loading completes: 2.2 list endpoints can return
+  before location plugins finish loading. Do not discard user credentials or
+  disable integrations merely to suppress plugin errors.
 - **Policy token snapshot.** The policy plugin gets its Omnigent credentials
   when the server launches. A session that outlives that token's expiry fails
   open on the request/tool-result phases until it is relaunched. Tool-call
@@ -131,7 +152,7 @@ replays the history as a text preamble instead.
 
 ## Troubleshooting
 
-- *Harness is outdated*: install `@opencode/cli@2.0.32` as shown above.
+- *Harness is outdated*: install `@opencode/cli@2.3.0` as shown above.
 - *Auth-shaped turn error*: the model's provider needs a sign-in. Run
   `opencode auth login` on the host, or pick a free `opencode/…` model.
 - Diagnostics: set `OMNIGENT_HARNESS_STDERR_ENABLED=1` before starting the host

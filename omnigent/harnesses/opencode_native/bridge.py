@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import sqlite3
 import tempfile
 import urllib.parse
@@ -549,6 +550,49 @@ def copy_opencode_database_for_fork(source_bridge_dir: Path, dest_bridge_dir: Pa
     )
 
 
+def _user_opencode_config_dir() -> Path:
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    return (Path(xdg) if xdg else Path.home() / ".config") / "opencode"
+
+
+def seed_opencode_user_resources(bridge_dir: Path) -> None:
+    """Expose user plugins, skills and agents without sharing the generated config.
+
+    Link individual entries so managed-plugin cleanup cannot unlink a user file
+    through a shared parent directory. Copy on systems without symlink support.
+    Existing bridge-owned entries and instructions always win.
+    """
+    source_root = _user_opencode_config_dir()
+    target_root = xdg_config_home_for_bridge_dir(bridge_dir) / "opencode"
+    if not source_root.is_dir() or source_root.resolve() == target_root.resolve():
+        return
+    target_root.mkdir(parents=True, exist_ok=True)
+    entries: list[tuple[Path, Path]] = []
+    for name in ("plugin", "plugins", "agent", "agents", "skill", "skills", "command", "commands"):
+        source = source_root / name
+        if source.is_dir():
+            target = target_root / name
+            target.mkdir(exist_ok=True)
+            entries.extend((entry, target / entry.name) for entry in sorted(source.iterdir()))
+    for name in ("node_modules", "package.json"):
+        entries.append((source_root / name, target_root / name))
+    for source, target in entries:
+        if not source.exists() or target.exists() or target.is_symlink():
+            continue
+        try:
+            target.symlink_to(source.resolve(), target_is_directory=source.is_dir())
+        except OSError:
+            if source.is_dir():
+                shutil.copytree(source, target)
+            else:
+                shutil.copy2(source, target)
+    # TUI preferences are a snapshot: the private TUI must not rewrite global settings.
+    source_tui = source_root / "tui.json"
+    target_tui = target_root / "tui.json"
+    if source_tui.is_file() and not target_tui.exists():
+        shutil.copy2(source_tui, target_tui)
+
+
 def user_opencode_config_paths() -> list[Path]:
     """
     Return the user's real OpenCode config paths (not the per-session ones).
@@ -561,9 +605,7 @@ def user_opencode_config_paths() -> list[Path]:
     ``opencode.jsonc`` in that order (later files win), so every existing file
     is returned in that order.
     """
-    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    cfg_dir = base / "opencode"
+    cfg_dir = _user_opencode_config_dir()
     return [
         path
         for name in ("config.json", "opencode.json", "opencode.jsonc")
